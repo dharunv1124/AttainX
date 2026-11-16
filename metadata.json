@@ -1,0 +1,6 @@
+{
+  "name": "CO-Based OBE Exam Analysis System",
+  "description": "Departmental CO-based OBE exam analysis and attainment calculation system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

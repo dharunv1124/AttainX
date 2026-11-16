@@ -1,0 +1,53 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Local environment and credentials
+.env*
+!.env.example
+secrets/
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases and backups
+*.sqlite*
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.bak
+*.backup
+*.backup-*
+*.dump
+backups/
+database-backups/
+db_backups/
+
+# Student rosters, uploads, and private test data
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+uploads/
+uploaded_rosters/
+rosters/
+student_uploads/
+test-data/
+test_data/
+private-test-data/
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/data/
