@@ -22,6 +22,15 @@ INCORRECT_SEMESTER_6_SUBJECTS = (
 
 def upgrade() -> None:
     bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.alter_column(
+            "alembic_version",
+            "version_num",
+            existing_type=sa.String(length=32),
+            type_=sa.String(length=255),
+            existing_nullable=False,
+        )
+
     bind.execute(
         sa.text(
             """

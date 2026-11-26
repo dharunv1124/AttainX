@@ -348,6 +348,54 @@ def test_subject_scope_reference_data_is_idempotent_and_rejects_conflicts(tmp_pa
     database.dispose()
 
 
+@pytest.mark.parametrize(
+    ("dialect_name", "expected_operations"),
+    [
+        ("postgresql", ["alter_column", "execute"]),
+        ("sqlite", ["execute"]),
+    ],
+)
+def test_cse_subject_correction_migration_expands_postgresql_revision_column(
+    monkeypatch, dialect_name, expected_operations
+):
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "006_correct_cse_year3_semester6_subjects.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "correct_cse_year3_semester6_subjects", migration_path
+    )
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    operations = []
+
+    class Bind:
+        def __init__(self, name):
+            self.dialect = type("Dialect", (), {"name": name})()
+
+        def execute(self, *args):
+            operations.append(("execute", args))
+
+    monkeypatch.setattr(migration.op, "get_bind", lambda: Bind(dialect_name))
+    monkeypatch.setattr(
+        migration.op,
+        "alter_column",
+        lambda *args, **kwargs: operations.append(("alter_column", args, kwargs)),
+    )
+
+    migration.upgrade()
+
+    assert [operation[0] for operation in operations] == expected_operations
+    if dialect_name == "postgresql":
+        _, args, kwargs = operations[0]
+        assert args == ("alembic_version", "version_num")
+        assert kwargs["existing_type"].length == 32
+        assert kwargs["type_"].length == 255
+
+
 # ---------------- 1. Security & Hashing Unit Tests ----------------
 def test_password_hashing_and_verification():
     raw_pw = "Secret@123"
