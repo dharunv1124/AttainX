@@ -188,10 +188,24 @@ def upgrade() -> None:
     op.drop_index("idx_section_lookup", table_name="sections")
     op.drop_index("uq_student_section_register_no_active", table_name="students")
     for table_name in ("sections", "subjects", "exams", "students"):
-        with op.batch_alter_table(table_name, recreate="always") as batch_op:
-            batch_op.add_column(sa.Column("batch_id", sa.Integer(), nullable=True))
-            batch_op.create_foreign_key(
+        if bind.dialect.name == "sqlite":
+            with op.batch_alter_table(table_name, recreate="always") as batch_op:
+                batch_op.add_column(sa.Column("batch_id", sa.Integer(), nullable=True))
+                batch_op.create_foreign_key(
+                    f"fk_{table_name}_batch_id_batches",
+                    "batches",
+                    ["batch_id"],
+                    ["id"],
+                    ondelete="RESTRICT",
+                )
+        else:
+            op.add_column(
+                table_name,
+                sa.Column("batch_id", sa.Integer(), nullable=True),
+            )
+            op.create_foreign_key(
                 f"fk_{table_name}_batch_id_batches",
+                table_name,
                 "batches",
                 ["batch_id"],
                 ["id"],

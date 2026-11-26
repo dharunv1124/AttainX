@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -383,6 +384,111 @@ def test_migration_preserves_duplicate_batch_register_conflicts(tmp_path, monkey
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "016_batch_student_placement",
         )
+
+
+@pytest.mark.parametrize("dialect_name", ["postgresql", "sqlite"])
+def test_batch_migration_uses_dialect_appropriate_batch_id_alterations(
+    monkeypatch, dialect_name
+):
+    spec = importlib.util.spec_from_file_location(
+        "batch_student_placement_native_alter_test", MIGRATION_PATH
+    )
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    table_names = ("sections", "subjects", "exams", "students")
+    operations = []
+
+    class StopMigration(Exception):
+        pass
+
+    class Result:
+        def scalar_one(self):
+            return 1
+
+    class Bind:
+        def __init__(self):
+            self.dialect = type("Dialect", (), {"name": dialect_name})()
+
+        def exec_driver_sql(self, _statement):
+            return None
+
+        def execute(self, statement, _parameters=None):
+            if "UPDATE sections SET batch_id" in str(statement):
+                raise StopMigration
+            return Result()
+
+    class BatchOperations:
+        def __init__(self, table_name):
+            self.table_name = table_name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, _value, _traceback):
+            return False
+
+        def add_column(self, column):
+            operations.append(("batch_add_column", self.table_name, column))
+
+        def create_foreign_key(self, *args, **kwargs):
+            operations.append(("batch_create_foreign_key", self.table_name, args, kwargs))
+
+    monkeypatch.setattr(migration, "_verify_sqlite_backup", lambda _bind: None)
+    monkeypatch.setattr(migration, "_preflight", lambda _bind: None)
+    monkeypatch.setattr(migration.op, "get_bind", Bind)
+    monkeypatch.setattr(migration.op, "create_table", lambda *args, **kwargs: None)
+    monkeypatch.setattr(migration.op, "drop_index", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        migration.op,
+        "batch_alter_table",
+        lambda table_name, **kwargs: (
+            operations.append(("batch_alter_table", table_name, kwargs))
+            or BatchOperations(table_name)
+        ),
+    )
+    monkeypatch.setattr(
+        migration.op,
+        "add_column",
+        lambda table_name, column: operations.append(("add_column", table_name, column)),
+    )
+    monkeypatch.setattr(
+        migration.op,
+        "create_foreign_key",
+        lambda *args, **kwargs: operations.append(("create_foreign_key", args, kwargs)),
+    )
+
+    with pytest.raises(StopMigration):
+        migration.upgrade()
+
+    if dialect_name == "postgresql":
+        assert not any(operation[0] == "batch_alter_table" for operation in operations)
+        add_columns = [operation for operation in operations if operation[0] == "add_column"]
+        assert [operation[1] for operation in add_columns] == list(table_names)
+        assert all(
+            operation[2].name == "batch_id" and operation[2].nullable is True
+            for operation in add_columns
+        )
+        foreign_keys = [
+            operation for operation in operations if operation[0] == "create_foreign_key"
+        ]
+        assert [operation[1][1] for operation in foreign_keys] == list(table_names)
+        assert [operation[1][0] for operation in foreign_keys] == [
+            f"fk_{table_name}_batch_id_batches" for table_name in table_names
+        ]
+        assert all(operation[2]["ondelete"] == "RESTRICT" for operation in foreign_keys)
+    else:
+        batch_alters = [
+            operation for operation in operations if operation[0] == "batch_alter_table"
+        ]
+        assert [operation[1] for operation in batch_alters] == list(table_names)
+        assert all(operation[2] == {"recreate": "always"} for operation in batch_alters)
+        assert not any(operation[0] == "add_column" for operation in operations)
+        batch_columns = [
+            operation for operation in operations if operation[0] == "batch_add_column"
+        ]
+        assert [operation[1] for operation in batch_columns] == list(table_names)
+        assert all(operation[2].name == "batch_id" for operation in batch_columns)
 
 
 def test_logical_section_migration_snapshots_placements_on_an_isolated_database(tmp_path, monkeypatch):
