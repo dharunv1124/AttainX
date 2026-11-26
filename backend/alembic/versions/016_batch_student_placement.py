@@ -172,12 +172,15 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("start_year", "end_year", name="uq_batch_year_range"),
     )
-    bind.execute(sa.text(
-        """
-        INSERT INTO batches (batch_name, start_year, end_year, is_active, created_at, updated_at)
-        VALUES ('2024–28', 2024, 2028, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """
-    ))
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO batches (batch_name, start_year, end_year, is_active, created_at, updated_at)
+            VALUES ('2024–28', 2024, 2028, :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """
+        ).bindparams(sa.bindparam("is_active", type_=sa.Boolean())),
+        {"is_active": True},
+    )
     default_batch_id = bind.execute(sa.text(
         "SELECT id FROM batches WHERE start_year = 2024 AND end_year = 2028"
     )).scalar_one()
@@ -296,20 +299,23 @@ def upgrade() -> None:
         ["section_id", "is_current"],
     )
 
-    bind.execute(sa.text(
-        """
-        INSERT INTO student_academic_placements (
-            student_id, batch_id, department_id, year_id, semester_id, section_id,
-            is_current, effective_from, effective_to, created_at
-        )
-        SELECT students.id, students.batch_id, sections.department_id, sections.year_id,
-               NULL,
-               sections.id, 1, COALESCE(students.created_at, CURRENT_TIMESTAMP), NULL,
-               COALESCE(students.created_at, CURRENT_TIMESTAMP)
-        FROM students
-        JOIN sections ON sections.id = students.section_id
-        """
-    ))
+    bind.execute(
+        sa.text(
+            """
+            INSERT INTO student_academic_placements (
+                student_id, batch_id, department_id, year_id, semester_id, section_id,
+                is_current, effective_from, effective_to, created_at
+            )
+            SELECT students.id, students.batch_id, sections.department_id, sections.year_id,
+                   NULL,
+                   sections.id, :is_current, COALESCE(students.created_at, CURRENT_TIMESTAMP), NULL,
+                   COALESCE(students.created_at, CURRENT_TIMESTAMP)
+            FROM students
+            JOIN sections ON sections.id = students.section_id
+            """
+        ).bindparams(sa.bindparam("is_current", type_=sa.Boolean())),
+        {"is_current": True},
+    )
 
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("sections", recreate="always") as batch_op:

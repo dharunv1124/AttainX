@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, event
+from sqlalchemy import Boolean, create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -283,10 +284,33 @@ def test_migration_backfills_default_batch_and_preserves_legacy_records(tmp_path
     _legacy_database(database_path)
     _create_sqlite_backup(database_path, backup_path)
 
-    _run_batch_migration(database_path, backup_path, monkeypatch)
+    bound_boolean_values = {}
+
+    def capture_boolean_bindings(_connection, statement, _multiparams, params, _options):
+        sql = getattr(statement, "text", "")
+        parameter_name = None
+        if "INSERT INTO batches" in sql:
+            parameter_name = "is_active"
+        elif "INSERT INTO student_academic_placements" in sql:
+            parameter_name = "is_current"
+        if parameter_name is not None:
+            bind = statement.compile().binds[parameter_name]
+            bound_boolean_values[parameter_name] = (params[parameter_name], bind.type)
+
+    event.listen(Engine, "before_execute", capture_boolean_bindings)
+    try:
+        _run_batch_migration(database_path, backup_path, monkeypatch)
+    finally:
+        event.remove(Engine, "before_execute", capture_boolean_bindings)
+
+    assert set(bound_boolean_values) == {"is_active", "is_current"}
+    for value, bind_type in bound_boolean_values.values():
+        assert value is True
+        assert isinstance(bind_type, Boolean)
 
     with sqlite3.connect(database_path) as db:
         batch_id = db.execute("SELECT id FROM batches WHERE batch_name = '2024–28'").fetchone()[0]
+        assert db.execute("SELECT is_active FROM batches WHERE id = ?", (batch_id,)).fetchone() == (1,)
         assert db.execute("SELECT batch_id FROM students WHERE id = 1").fetchone() == (batch_id,)
         assert db.execute("SELECT batch_id FROM sections WHERE id = 1").fetchone() == (batch_id,)
         assert db.execute("SELECT batch_id FROM subjects WHERE id IN (1, 2) ORDER BY id").fetchall() == [
