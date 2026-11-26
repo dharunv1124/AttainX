@@ -31,6 +31,135 @@ CURRICULUM = {
 }
 
 
+DEPARTMENTS = (
+    ("Computer Science and Engineering", "CSE"),
+    ("Information Technology", "IT"),
+    ("Electronics and Communication Engineering", "ECE"),
+    ("Artificial Intelligence and Machine Learning", "AIML"),
+    ("Internet of Things", "IOT"),
+    ("Electrical and Electronics Engineering", "EEE"),
+    ("Robotics and Automation", "RA"),
+    ("Mechanical Engineering", "MECH"),
+    ("Food Technology", "FT"),
+)
+YEAR_NAMES = {
+    1: "1st Year",
+    2: "2nd Year",
+    3: "3rd Year",
+    4: "4th Year",
+}
+SEMESTER_YEARS = {
+    1: 1,
+    2: 1,
+    3: 2,
+    4: 2,
+    5: 3,
+    6: 3,
+    7: 4,
+    8: 4,
+}
+
+
+def _ensure_academic_reference_data(bind) -> None:
+    departments = bind.execute(
+        sa.text("SELECT id, name, code FROM departments")
+    ).mappings().all()
+    for expected_name, expected_code in DEPARTMENTS:
+        code_matches = [
+            row for row in departments
+            if row["code"].strip().upper() == expected_code
+        ]
+        name_matches = [
+            row for row in departments
+            if row["name"].strip().casefold() == expected_name.casefold()
+        ]
+        matches = {row["id"]: row for row in code_matches + name_matches}
+        if matches:
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"Conflicting department mapping for {expected_code} ({expected_name})."
+                )
+            existing = next(iter(matches.values()))
+            if (
+                existing["code"].strip().upper() != expected_code
+                or existing["name"].strip().casefold() != expected_name.casefold()
+            ):
+                raise RuntimeError(
+                    f"Conflicting department mapping for {expected_code} ({expected_name})."
+                )
+            continue
+
+        bind.execute(
+            sa.text("INSERT INTO departments (name, code) VALUES (:name, :code)"),
+            {"name": expected_name, "code": expected_code},
+        )
+
+    years = bind.execute(
+        sa.text("SELECT id, year_number, name FROM years")
+    ).mappings().all()
+    year_ids = {}
+    for number, name in YEAR_NAMES.items():
+        number_matches = [row for row in years if row["year_number"] == number]
+        name_matches = [
+            row for row in years
+            if row["name"].strip().casefold() == name.casefold()
+        ]
+        matches = {row["id"]: row for row in number_matches + name_matches}
+        if matches:
+            if len(matches) != 1:
+                raise RuntimeError(f"Conflicting academic year mapping for {name}.")
+            existing = next(iter(matches.values()))
+            if (
+                existing["year_number"] != number
+                or existing["name"].strip().casefold() != name.casefold()
+            ):
+                raise RuntimeError(f"Conflicting academic year mapping for {name}.")
+            year_ids[number] = existing["id"]
+            continue
+
+        bind.execute(
+            sa.text("INSERT INTO years (year_number, name) VALUES (:number, :name)"),
+            {"number": number, "name": name},
+        )
+        year_ids[number] = bind.execute(
+            sa.text("SELECT id FROM years WHERE year_number = :number"),
+            {"number": number},
+        ).scalar_one()
+
+    semesters = bind.execute(
+        sa.text("SELECT id, semester_number, name, year_id FROM semesters")
+    ).mappings().all()
+    for number, year_number in SEMESTER_YEARS.items():
+        name = f"Semester {number}"
+        number_matches = [
+            row for row in semesters if row["semester_number"] == number
+        ]
+        name_matches = [
+            row for row in semesters
+            if row["name"].strip().casefold() == name.casefold()
+        ]
+        matches = {row["id"]: row for row in number_matches + name_matches}
+        if matches:
+            if len(matches) != 1:
+                raise RuntimeError(f"Conflicting academic semester mapping for {name}.")
+            existing = next(iter(matches.values()))
+            if (
+                existing["semester_number"] != number
+                or existing["name"].strip().casefold() != name.casefold()
+                or existing["year_id"] != year_ids[year_number]
+            ):
+                raise RuntimeError(f"Conflicting academic semester mapping for {name}.")
+            continue
+
+        bind.execute(
+            sa.text(
+                "INSERT INTO semesters (semester_number, name, year_id) "
+                "VALUES (:number, :name, :year_id)"
+            ),
+            {"number": number, "name": name, "year_id": year_ids[year_number]},
+        )
+
+
 def _academic_contexts(bind):
     department_id = bind.execute(sa.text(
         "SELECT id FROM departments WHERE code = 'CSE'"
@@ -189,6 +318,7 @@ def _ensure_curriculum_subjects(bind, department_id, year_id, semesters) -> None
 
 def upgrade() -> None:
     bind = op.get_bind()
+    _ensure_academic_reference_data(bind)
     department_id, year_id, semesters = _academic_contexts(bind)
     op.drop_index("ix_subjects_name", table_name="subjects")
 

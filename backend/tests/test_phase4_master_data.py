@@ -199,10 +199,15 @@ def test_subject_archive_migration_preserves_existing_subjects(tmp_path):
 def test_subject_scope_migration_preserves_exam_contexts_and_reports_unknowns(tmp_path, capsys):
     database = create_engine(f"sqlite:///{tmp_path / 'legacy_subjects.sqlite'}")
     with database.begin() as connection:
-        connection.exec_driver_sql("CREATE TABLE departments (id INTEGER PRIMARY KEY, code VARCHAR(20))")
-        connection.exec_driver_sql("CREATE TABLE years (id INTEGER PRIMARY KEY, year_number INTEGER)")
         connection.exec_driver_sql(
-            "CREATE TABLE semesters (id INTEGER PRIMARY KEY, semester_number INTEGER, year_id INTEGER)"
+            "CREATE TABLE departments (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL, code VARCHAR(20) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE years (id INTEGER PRIMARY KEY, year_number INTEGER NOT NULL, name VARCHAR(20) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE semesters (id INTEGER PRIMARY KEY, semester_number INTEGER NOT NULL, "
+            "name VARCHAR(20) NOT NULL, year_id INTEGER NOT NULL)"
         )
         connection.exec_driver_sql(
             "CREATE TABLE subjects (id INTEGER PRIMARY KEY, name VARCHAR(150) NOT NULL, "
@@ -220,12 +225,6 @@ def test_subject_scope_migration_preserves_exam_contexts_and_reports_unknowns(tm
         connection.exec_driver_sql(
             "CREATE TABLE student_marks (id INTEGER PRIMARY KEY, exam_id INTEGER, student_id INTEGER, "
             "question_number VARCHAR(20), obtained_mark NUMERIC)"
-        )
-        connection.exec_driver_sql("INSERT INTO departments (id, code) VALUES (1, 'CSE'), (2, 'IT')")
-        connection.exec_driver_sql("INSERT INTO years (id, year_number) VALUES (1, 1), (3, 3)")
-        connection.exec_driver_sql(
-            "INSERT INTO semesters (id, semester_number, year_id) "
-            "VALUES (1, 1, 1), (5, 5, 3), (6, 6, 3)"
         )
         connection.exec_driver_sql(
             "INSERT INTO subjects (id, name) VALUES "
@@ -290,6 +289,62 @@ def test_subject_scope_migration_preserves_exam_contexts_and_reports_unknowns(tm
         ]
 
     assert "UNMAPPED LEGACY SUBJECT" in capsys.readouterr().out
+    database.dispose()
+
+
+def test_subject_scope_reference_data_is_idempotent_and_rejects_conflicts(tmp_path):
+    database = create_engine(f"sqlite:///{tmp_path / 'academic_references.sqlite'}")
+    with database.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE departments (id INTEGER PRIMARY KEY, name VARCHAR(100) NOT NULL, code VARCHAR(20) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE years (id INTEGER PRIMARY KEY, year_number INTEGER NOT NULL, name VARCHAR(20) NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE semesters (id INTEGER PRIMARY KEY, semester_number INTEGER NOT NULL, "
+            "name VARCHAR(20) NOT NULL, year_id INTEGER NOT NULL)"
+        )
+
+    migration_path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "005_subject_academic_scope.py"
+    spec = importlib.util.spec_from_file_location("subject_academic_scope_references", migration_path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    with database.begin() as connection:
+        migration._ensure_academic_reference_data(connection)
+        original_ids = {
+            "departments": connection.execute(text("SELECT code, id FROM departments ORDER BY code")).all(),
+            "years": connection.execute(text("SELECT year_number, id FROM years ORDER BY year_number")).all(),
+            "semesters": connection.execute(text("SELECT semester_number, id FROM semesters ORDER BY semester_number")).all(),
+        }
+        migration._ensure_academic_reference_data(connection)
+        assert connection.execute(text("SELECT COUNT(*) FROM departments")).scalar_one() == 9
+        assert connection.execute(text("SELECT COUNT(*) FROM years")).scalar_one() == 4
+        assert connection.execute(text("SELECT COUNT(*) FROM semesters")).scalar_one() == 8
+        assert {
+            "departments": connection.execute(text("SELECT code, id FROM departments ORDER BY code")).all(),
+            "years": connection.execute(text("SELECT year_number, id FROM years ORDER BY year_number")).all(),
+            "semesters": connection.execute(text("SELECT semester_number, id FROM semesters ORDER BY semester_number")).all(),
+        } == original_ids
+
+        year_ids = dict(connection.execute(text("SELECT year_number, id FROM years")).all())
+        assert connection.execute(
+            text("SELECT semester_number, year_id FROM semesters ORDER BY semester_number")
+        ).all() == [
+            (number, year_ids[(number + 1) // 2])
+            for number in range(1, 9)
+        ]
+
+        connection.execute(
+            text("UPDATE semesters SET year_id = :year_id WHERE semester_number = 5"),
+            {"year_id": year_ids[2]},
+        )
+        with pytest.raises(RuntimeError, match="Conflicting academic semester mapping for Semester 5"):
+            migration._ensure_academic_reference_data(connection)
+        assert connection.execute(
+            text("SELECT year_id FROM semesters WHERE semester_number = 5")
+        ).scalar_one() == year_ids[2]
     database.dispose()
 
 
